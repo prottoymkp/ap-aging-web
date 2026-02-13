@@ -342,6 +342,7 @@ def bucket_from_age(age_days: int) -> str:
 
 
 def fifo_aging(tx_df: pd.DataFrame, as_of: dt.date):
+    tolerance = 1.0
     buckets = ["0-30", "31-60", "61-90", "91-180", "181-365", ">365", "future_dated_unpaid", "unknown_date_unpaid", "advance_overpaid"]
     bs = {k: 0.0 for k in buckets}
 
@@ -463,6 +464,27 @@ def fifo_aging(tx_df: pd.DataFrame, as_of: dt.date):
             "bucket": "advance_overpaid",
         })
 
+    # Consistency rule: advance_overpaid should only exist for a net credit balance.
+    # Documented exceptions can be added here if business rules require them.
+    if balance >= -1e-9:
+        bs["advance_overpaid"] = 0.0
+        outstanding_detail = [o for o in outstanding_detail if o.get("bucket") != "advance_overpaid"]
+
+    # Near-zero balance means aging buckets should fully net to zero.
+    if abs(balance) <= tolerance:
+        for bucket in [
+            "0-30", "31-60", "61-90", "91-180", "181-365", ">365",
+            "future_dated_unpaid", "unknown_date_unpaid", "advance_overpaid",
+        ]:
+            bs[bucket] = 0.0
+        outstanding_detail = [
+            o for o in outstanding_detail
+            if o.get("bucket") not in {
+                "0-30", "31-60", "61-90", "91-180", "181-365", ">365",
+                "future", "unknown_date_unpaid", "advance_overpaid",
+            }
+        ]
+
     return total_payable, total_paid, balance, last_payment, oldest_unpaid, bs, outstanding_detail
 
 
@@ -575,6 +597,10 @@ def transform_ap_ledger(excel_bytes: bytes, as_of: dt.date, top_sheet_name: str 
 
         total_payable, total_paid, balance, last_payment, oldest_unpaid, bs, out = fifo_aging(tx_df, as_of)
 
+        # Sign convention:
+        # - unpaid buckets are positive liabilities.
+        # - advance_overpaid is stored as a positive summary value, but subtracts
+        #   in reconciliation because it offsets liabilities.
         bucket_total = (
             bs["0-30"] + bs["31-60"] + bs["61-90"] + bs["91-180"] + bs["181-365"] + bs[">365"]
             + bs["future_dated_unpaid"] + bs["unknown_date_unpaid"]
