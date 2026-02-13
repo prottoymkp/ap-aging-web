@@ -379,6 +379,7 @@ def fifo_aging(tx_df: pd.DataFrame, as_of: dt.date):
             reductions.append(-net)
 
     inv_dated.sort(key=lambda x: x["date"])
+    inv_future.sort(key=lambda x: x["date"])
 
     def apply_to_queue(queue: List[Dict[str, Any]], amt: float) -> float:
         idx = 0
@@ -398,16 +399,8 @@ def fifo_aging(tx_df: pd.DataFrame, as_of: dt.date):
     for red in reductions:
         rem = apply_to_queue(inv_dated, red)
 
-        i = 0
-        while rem > 1e-9 and i < len(inv_undated):
-            take = min(inv_undated[i]["amt"], rem)
-            inv_undated[i]["amt"] -= take
-            rem -= take
-            if inv_undated[i]["amt"] <= 1e-9:
-                i += 1
-            else:
-                break
-        inv_undated = [x for x in inv_undated if x["amt"] > 1e-9]
+        rem = apply_to_queue(inv_undated, rem)
+        rem = apply_to_queue(inv_future, rem)
 
         if rem > 1e-9:
             advance += rem
