@@ -523,8 +523,18 @@ def transform_ap_ledger(excel_bytes: bytes, as_of: dt.date, top_sheet_name: str 
         # fallback: first sheet
         top_sheet_name = wb.sheetnames[0]
 
-    top_df = parse_top_sheet(excel_bytes, top_sheet_name)
-    top_names = top_df["Supplier Name"].tolist()
+top_df = parse_top_sheet(excel_bytes, top_sheet_name)
+
+# Aggregate top sheet in case supplier appears multiple times
+top_agg = (
+    top_df.groupby("Supplier Name", as_index=True)[
+        ["Materials Value", "Paid Amount", "Unpaid Amount/Liabilities"]
+    ]
+    .sum()
+)
+
+top_names = top_df["Supplier Name"].tolist()
+
 
     aging_rows: List[Dict[str, Any]] = []
     outstanding_rows: List[Dict[str, Any]] = []
@@ -573,6 +583,20 @@ def transform_ap_ledger(excel_bytes: bytes, as_of: dt.date, top_sheet_name: str 
         )
         recon_delta = balance - bucket_total
 
+# Top sheet reconciliation (may be missing if mapping is wrong or supplier not present)
+if supplier in top_agg.index:
+    top_materials = float(top_agg.loc[supplier, "Materials Value"])
+    top_paid = float(top_agg.loc[supplier, "Paid Amount"])
+    top_balance = float(top_agg.loc[supplier, "Unpaid Amount/Liabilities"])
+else:
+    top_materials = np.nan
+    top_paid = np.nan
+    top_balance = np.nan
+
+diff_materials = (total_payable - top_materials) if not np.isnan(top_materials) else np.nan
+diff_paid = (total_paid - top_paid) if not np.isnan(top_paid) else np.nan
+diff_balance = (balance - top_balance) if not np.isnan(top_balance) else np.nan
+
         aging_rows.append({
             "supplier": supplier,
             "sheet": sname,
@@ -595,7 +619,13 @@ def transform_ap_ledger(excel_bytes: bytes, as_of: dt.date, top_sheet_name: str 
                 issues.get("negative_credit_rows", 0) + issues.get("negative_debit_rows", 0)
             ) if not issues.get("no_header") else np.nan,
             "recon_delta": recon_delta,
-        })
+        "top_materials": top_materials,
+"top_paid": top_paid,
+"top_balance": top_balance,
+"diff_materials": diff_materials,
+"diff_paid": diff_paid,
+"diff_balance": diff_balance,
+})
 
         for u in und:
             u.update({"supplier": supplier, "sheet": sname})
@@ -652,7 +682,9 @@ def transform_ap_ledger(excel_bytes: bytes, as_of: dt.date, top_sheet_name: str 
 
     fmt_plan = {
         "Aging_Summary": {
-            "numeric": [
+            "numeric": ["top_materials", "top_paid", "top_balance",
+"diff_materials", "diff_paid", "diff_balance",
+
                 "total_payable", "total_paid", "balance",
                 "0-30", "31-60", "61-90", "91-180", "181-365", ">365",
                 "future_dated_unpaid", "unknown_date_unpaid", "advance_overpaid",
