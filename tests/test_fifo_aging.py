@@ -1,12 +1,69 @@
 import datetime as dt
 import unittest
+from io import BytesIO
 
+import numpy as np
 import pandas as pd
+from openpyxl import Workbook, load_workbook
 
-from engine import fifo_aging
+from engine import find_header_row, fifo_aging, parse_top_sheet, transform_ap_ledger
 
 
 class TestFifoAging(unittest.TestCase):
+    def test_find_header_row_ignores_float_cells_while_matching_labels(self):
+        rows = [
+            [np.nan, 42.0, None],
+            [1.0, "SL.No", "Date", "Debit Amount", "Credit Amount", 5.5],
+        ]
+
+        header_idx, col_map = find_header_row(rows)
+
+        self.assertEqual(header_idx, 1)
+        self.assertEqual(col_map["date"], 2)
+        self.assertEqual(col_map["debit"], 3)
+        self.assertEqual(col_map["credit"], 4)
+
+    def test_parse_top_sheet_ignores_float_cells_while_matching_header(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Top Sheet"
+        ws.append([np.nan, 100.5, None])
+        ws.append(["Supplier Name", "Materials Value", "Paid Amount", "Unpaid Amount/Liabilities"])
+        ws.append(["ABC Traders", 1000, 250, 750])
+        buffer = BytesIO()
+        wb.save(buffer)
+
+        parsed = parse_top_sheet(buffer.getvalue(), "Top Sheet")
+
+        self.assertEqual(parsed.loc[0, "Supplier Name"], "ABC Traders")
+        self.assertEqual(parsed.loc[0, "Materials Value"], 1000)
+        self.assertEqual(parsed.loc[0, "Paid Amount"], 250)
+        self.assertEqual(parsed.loc[0, "Unpaid Amount/Liabilities"], 750)
+
+    def test_transform_handles_empty_optional_output_sheets(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Top Sheet"
+        ws.append(["Supplier Name", "Materials Value", "Paid Amount", "Unpaid Amount/Liabilities"])
+        ws.append(["ABC Traders", 1000, 250, 750])
+
+        supplier = wb.create_sheet("ABC")
+        supplier["A1"] = "ABC Traders"
+        supplier.append([])
+        supplier.append(["SL.No", "Date", "Remarks", "Debit Amount", "Credit Amount"])
+        supplier.append([1, dt.date(2024, 1, 5), "Invoice", 0, 1000])
+        supplier.append([2, dt.date(2024, 1, 15), "Payment", 250, 0])
+        supplier.append(["Total Amount"])
+
+        buffer = BytesIO()
+        wb.save(buffer)
+
+        out_bytes = transform_ap_ledger(buffer.getvalue(), dt.date(2024, 1, 31), "Top Sheet")
+        out_wb = load_workbook(BytesIO(out_bytes), read_only=True)
+
+        self.assertIn("Aging_Summary", out_wb.sheetnames)
+        self.assertIn("Undated_Entries", out_wb.sheetnames)
+
     def test_balanced_with_future_dated_row_results_in_zero_outstanding(self):
         as_of = dt.date(2024, 1, 31)
         tx_df = pd.DataFrame(

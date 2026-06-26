@@ -39,6 +39,17 @@ def norm_name(x: Any) -> str:
     return s
 
 
+def cell_text(x: Any) -> str:
+    if x is None:
+        return ""
+    try:
+        if bool(pd.isna(x)):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(x).strip().lower()
+
+
 def normalize_tokens(x: Any) -> List[str]:
     toks = [t for t in norm_name(x).split() if t and t not in STOPWORDS]
     return toks
@@ -128,7 +139,7 @@ def parse_top_sheet(excel_bytes: bytes, top_sheet_name: str) -> pd.DataFrame:
     raw = pd.read_excel(BytesIO(excel_bytes), sheet_name=top_sheet_name, header=None, engine="openpyxl")
     hdr = None
     for i in range(len(raw)):
-        row = raw.iloc[i].astype(str).str.lower().tolist()
+        row = [cell_text(x) for x in raw.iloc[i].tolist()]
         if any("supplier name" in x for x in row):
             hdr = i
             break
@@ -139,7 +150,7 @@ def parse_top_sheet(excel_bytes: bytes, top_sheet_name: str) -> pd.DataFrame:
 
     def find_col(predicate) -> Optional[str]:
         for c in df.columns:
-            if predicate(str(c).strip().lower()):
+            if predicate(cell_text(c)):
                 return c
         return None
 
@@ -179,7 +190,7 @@ def sheet_rows_values(ws) -> List[List[Any]]:
 
 def find_header_row(rows: List[List[Any]], max_scan: int = 80) -> Tuple[Optional[int], Dict[str, int]]:
     for i, row in enumerate(rows[:max_scan]):
-        texts = [str(c).strip().lower() if c is not None else "" for c in row]
+        texts = [cell_text(c) for c in row]
         joined = " | ".join(texts)
         if (("sl.no" in joined) or ("sl no" in joined)) and ("date" in joined) and ("debit" in joined) and ("credit" in joined):
             col_map: Dict[str, int] = {}
@@ -526,6 +537,13 @@ def apply_borders(ws) -> None:
             cell.border = border
 
 
+def sorted_frame(rows: List[Dict[str, Any]], sort_cols: List[str]) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    if df.empty or any(c not in df.columns for c in sort_cols):
+        return df
+    return df.sort_values(sort_cols, ignore_index=True)
+
+
 # ----------------------------
 # Public API: transform bytes -> bytes
 # ----------------------------
@@ -679,11 +697,11 @@ def transform_ap_ledger(excel_bytes: bytes, as_of: dt.date, top_sheet_name: str 
         if parts:
             dq_rows.append({"supplier": supplier, "sheet": sname, "issues": "; ".join(parts)})
 
-    aging_df = pd.DataFrame(aging_rows).sort_values(["supplier", "sheet"], ignore_index=True)
-    outstanding_df = pd.DataFrame(outstanding_rows).sort_values(["supplier", "sheet", "bucket", "invoice_date"], ignore_index=True)
-    undated_df = pd.DataFrame(undated_rows).sort_values(["supplier", "sheet", "row_index"], ignore_index=True)
-    dq_df = pd.DataFrame(dq_rows).sort_values(["supplier", "sheet"], ignore_index=True)
-    mapping_df = pd.DataFrame(mapping_rows).sort_values(["match_score", "sheet"], ignore_index=True)
+    aging_df = sorted_frame(aging_rows, ["supplier", "sheet"])
+    outstanding_df = sorted_frame(outstanding_rows, ["supplier", "sheet", "bucket", "invoice_date"])
+    undated_df = sorted_frame(undated_rows, ["supplier", "sheet", "row_index"])
+    dq_df = sorted_frame(dq_rows, ["supplier", "sheet"])
+    mapping_df = sorted_frame(mapping_rows, ["match_score", "sheet"])
 
     # Write to memory (bytes)
     buffer = BytesIO()
